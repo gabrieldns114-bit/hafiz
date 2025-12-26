@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sistem Absensi & Gaji Mandiri</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Menggunakan Firebase Compat SDK agar sesuai dengan logika skrip sebelumnya -->
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-database-compat.js"></script>
+    <style>
+        .locked-overlay { position: relative; }
+        .locked-overlay::after {
+            content: "🔒 Login Admin untuk Input";
+            position: absolute;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(255,255,255,0.8);
+            display: flex; align-items: center; justify-content: center;
+            font-weight: bold; color: #4b5563; z-index: 10; border-radius: 0.75rem; cursor: pointer;
+        }
+        .admin-only.hidden { display: none; }
+    </style>
+</head>
+<body class="bg-gray-100 min-h-screen">
+
+    <!-- Navbar -->
+    <nav class="bg-indigo-700 text-white p-4 shadow-lg sticky top-0 z-40">
+        <div class="container mx-auto flex justify-between items-center">
+            <h1 class="text-xl font-bold flex items-center gap-2">
+                <span>💰</span> Payroll & Absensi
+            </h1>
+            <div class="flex items-center gap-4">
+                <div id="current-date" class="hidden md:block text-sm font-medium bg-indigo-800 px-3 py-1 rounded-full"></div>
+                <button id="auth-btn" onclick="toggleLogin()" class="bg-white text-indigo-700 px-4 py-1 rounded-lg font-bold text-sm shadow hover:bg-indigo-50 transition">
+                    Login Admin
+                </button>
+            </div>
+        </div>
+    </nav>
+
+    <div class="container mx-auto p-4 max-w-5xl">
+        
+        <!-- Dashboard Gaji (Summary) -->
+        <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6 text-white text-center">
+            <div class="bg-green-600 p-4 rounded-xl shadow">
+                <p class="text-xs uppercase opacity-80">Total Gaji Kerja</p>
+                <h3 id="stat-total-gaji" class="text-xl font-bold">Rp 0</h3>
+            </div>
+            <div class="bg-blue-600 p-4 rounded-xl shadow">
+                <p class="text-xs uppercase opacity-80">Total Lembur</p>
+                <h3 id="stat-total-overtime" class="text-xl font-bold">Rp 0</h3>
+            </div>
+            <div class="bg-red-500 p-4 rounded-xl shadow">
+                <p class="text-xs uppercase opacity-80">Total Kasbon</p>
+                <h3 id="stat-total-kasbon" class="text-xl font-bold">- Rp 0</h3>
+            </div>
+            <div class="bg-indigo-800 p-4 rounded-xl shadow">
+                <p class="text-xs uppercase opacity-80">Gaji Bersih (Take Home)</p>
+                <h3 id="stat-total-net" class="text-2xl font-bold">Rp 0</h3>
+            </div>
+        </div>
+
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            
+            <!-- Left Column: Settings & Input -->
+            <div class="lg:col-span-1 space-y-6">
+                
+                <!-- Gaji Settings -->
+                <div class="bg-white p-6 rounded-xl shadow-md">
+                    <h2 class="font-bold border-b pb-2 mb-4">⚙️ Pengaturan Gaji</h2>
+                    <div class="space-y-3">
+                        <div>
+                            <label class="text-xs text-gray-500 uppercase">Harian (Sehari)</label>
+                            <input type="number" id="cfg-daily" value="150000" class="w-full border p-2 rounded text-sm" onchange="calculateFinancials()">
+                        </div>
+                        <div>
+                            <label class="text-xs text-gray-500 uppercase">Lembur / Sesi</label>
+                            <input type="number" id="cfg-overtime" value="25000" class="w-full border p-2 rounded text-sm" onchange="calculateFinancials()">
+                        </div>
+                        <div>
+                            <label class="text-xs text-gray-500 uppercase">Kasbon / Input</label>
+                            <input type="number" id="cfg-kasbon-val" value="50000" class="w-full border p-2 rounded text-sm">
+                        </div>
+                        <div>
+                            <label class="text-xs text-gray-500 uppercase">Bonus Minggu (x)</label>
+                            <select id="cfg-sunday-mult" class="w-full border p-2 rounded text-sm" onchange="calculateFinancials()">
+                                <option value="1">1x (Normal)</option>
+                                <option value="1.5">1.5x</option>
+                                <option value="2" selected>2x (Double)</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Input Panel -->
+                <div id="section-input" class="bg-white p-6 rounded-xl shadow-md locked-overlay" onclick="checkAccess()">
+                    <h2 class="font-bold border-b pb-2 mb-4">📥 Input Data</h2>
+                    <div class="space-y-4">
+                        <div class="flex gap-2">
+                            <button data-type="Sehari" class="attendance-btn flex-1 bg-green-500 text-white py-2 rounded text-xs font-bold shadow hover:bg-green-600">SEHARI</button>
+                            <button data-type="Setengah Hari" class="attendance-btn flex-1 bg-yellow-500 text-white py-2 rounded text-xs font-bold shadow hover:bg-yellow-600">1/2 HARI</button>
+                        </div>
+                        <button data-type="Tidak Masuk" class="attendance-btn w-full bg-red-500 text-white py-2 rounded text-xs font-bold shadow hover:bg-red-600">TIDAK MASUK</button>
+                        
+                        <div class="pt-4 border-t">
+                            <label class="text-xs font-bold">Input Kasbon / Lembur</label>
+                            <input type="date" id="action-date" class="w-full border p-2 rounded text-sm my-1">
+                            <div class="flex gap-2">
+                                <button onclick="saveSpecial('Kasbon')" class="flex-1 bg-orange-500 text-white py-2 rounded text-xs font-bold shadow hover:bg-orange-600">KASBON</button>
+                                <button onclick="saveSpecial('Lembur')" class="flex-1 bg-purple-600 text-white py-2 rounded text-xs font-bold shadow hover:bg-purple-700">LEMBUR</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Right Column: Table & Filters -->
+            <div class="lg:col-span-2 space-y-6">
+                <div class="bg-white p-6 rounded-xl shadow-md">
+                    <div class="flex flex-wrap justify-between items-center mb-4 gap-2">
+                        <h2 class="font-bold">📊 Riwayat & Detail</h2>
+                        <div class="flex gap-2">
+                            <input type="month" id="month-selector" class="border p-1 rounded text-sm" onchange="loadData()">
+                            <button onclick="clearAllData()" class="admin-only hidden text-red-500 text-xs hover:underline">Hapus Semua Data</button>
+                        </div>
+                    </div>
+
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-sm text-left">
+                            <thead class="bg-gray-50 text-gray-600 uppercase text-xs">
+                                <tr>
+                                    <th class="p-3 text-center w-12">Hapus</th>
+                                    <th class="p-3">Tanggal</th>
+                                    <th class="p-3">Tipe</th>
+                                    <th class="p-3">Gaji</th>
+                                </tr>
+                            </thead>
+                            <tbody id="table-body">
+                                <tr><td colspan="4" class="p-10 text-center text-gray-400 italic">Menghubungkan ke database...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Login Modal -->
+    <div id="login-modal" class="fixed inset-0 bg-black/50 hidden flex items-center justify-center z-50 p-4">
+        <div class="bg-white p-6 rounded-xl shadow-2xl w-full max-w-sm">
+            <h3 class="text-xl font-bold mb-2">Login Admin</h3>
+            <p class="text-xs text-gray-500 mb-4">Gunakan password 'admin123'</p>
+            <input type="password" id="admin-pass" placeholder="Password" class="w-full border p-3 rounded-lg mb-4">
+            <div class="flex gap-2">
+                <button onclick="closeLogin()" class="flex-1 bg-gray-100 py-2 rounded-lg font-bold">Batal</button>
+                <button onclick="processLogin()" class="flex-1 bg-indigo-600 text-white py-2 rounded-lg font-bold">Masuk</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="toast" class="fixed bottom-5 right-5 hidden bg-gray-800 text-white px-6 py-3 rounded-lg shadow-2xl z-50 transform transition duration-300"></div>
+
+    <script>
+        // --- KONFIGURASI FIREBASE ANDA ---
+        const firebaseConfig = {
+            apiKey: "AIzaSyBvnv7a8SOlKkyEGkLtA0VQ1DjcAtw4VZI",
+            authDomain: "hafiznet-6f82b.firebaseapp.com",
+            databaseURL: "https://hafiznet-6f82b-default-rtdb.asia-southeast1.firebasedatabase.app",
+            projectId: "hafiznet-6f82b",
+            storageBucket: "hafiznet-6f82b.firebasestorage.app",
+            messagingSenderId: "1054358697096",
+            appId: "1:1054358697096:web:97c7084beadd3846c5db3d",
+            measurementId: "G-SDW9J273HX"
+        };
+
+        // Inisialisasi Firebase
+        firebase.initializeApp(firebaseConfig);
+        const db = firebase.database();
+
+        // --- STATE APLIKASI ---
+        const ADMIN_PASS = "admin123";
+        let isAdmin = false;
+        let attendanceData = [];
+
+        // --- AUTH & UI ---
+        function checkAccess() { if (!isAdmin) toggleLogin(); }
+        function toggleLogin() {
+            if (isAdmin) {
+                isAdmin = false; updateUI(); showToast("Logout Berhasil");
+            } else {
+                document.getElementById('login-modal').classList.remove('hidden');
+                document.getElementById('admin-pass').focus();
+            }
+        }
+        function closeLogin() { document.getElementById('login-modal').classList.add('hidden'); }
+        function processLogin() {
+            if (document.getElementById('admin-pass').value === ADMIN_PASS) {
+                isAdmin = true; 
+                updateUI(); 
+                closeLogin(); 
+                showToast("Selamat Datang, Admin!");
+                document.getElementById('admin-pass').value = "";
+            } else { alert("Password Salah!"); }
+        }
+        function updateUI() {
+            document.getElementById('section-input').classList.toggle('locked-overlay', !isAdmin);
+            document.getElementById('auth-btn').innerText = isAdmin ? "Logout Admin" : "Login Admin";
+            document.querySelectorAll('.admin-only').forEach(el => el.classList.toggle('hidden', !isAdmin));
+            calculateFinancials(); // Refresh tabel untuk memunculkan/menghilangkan tombol hapus
+        }
+
+        // --- LOGIKA PERHITUNGAN ---
+        function getToday() { return new Date().toISOString().split('T')[0]; }
+        function isSunday(dateString) { return new Date(dateString).getDay() === 0; }
+
+        function calculateFinancials() {
+            const daily = parseInt(document.getElementById('cfg-daily').value) || 0;
+            const otRate = parseInt(document.getElementById('cfg-overtime').value) || 0;
+            const sundayMult = parseFloat(document.getElementById('cfg-sunday-mult').value) || 1;
+
+            let totalBase = 0, totalOT = 0, totalKasbon = 0;
+            const tbody = document.getElementById('table-body');
+            tbody.innerHTML = "";
+
+            if (attendanceData.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="4" class="p-10 text-center text-gray-400 italic">Tidak ada data untuk bulan ini.</td></tr>';
+            }
+
+            // Urutkan data berdasarkan tanggal terbaru
+            attendanceData.sort((a,b) => {
+                if(b.tanggal !== a.tanggal) return b.tanggal.localeCompare(a.tanggal);
+                return b.timestamp - a.timestamp;
+            }).forEach(item => {
+                let rowGaji = 0;
+                const sunday = isSunday(item.tanggal);
+
+                if (item.status === 'Sehari') {
+                    rowGaji = sunday ? (daily * sundayMult) : daily;
+                    totalBase += rowGaji;
+                } else if (item.status === 'Setengah Hari') {
+                    rowGaji = daily * 0.5;
+                    totalBase += rowGaji;
+                } else if (item.status === 'Lembur') {
+                    rowGaji = otRate;
+                    totalOT += rowGaji;
+                } else if (item.status === 'Kasbon') {
+                    rowGaji = -(item.nilai || 0);
+                    totalKasbon += (item.nilai || 0);
+                }
+
+                const row = document.createElement('tr');
+                row.className = "border-b hover:bg-gray-50 transition";
+                row.innerHTML = `
+                    <td class="p-3 text-center">
+                        ${isAdmin ? `<button onclick="deleteItem('${item.id}')" class="text-red-400 hover:text-red-600">🗑️</button>` : '🔒'}
+                    </td>
+                    <td class="p-3 font-medium">
+                        ${item.tanggal} ${sunday ? '<span class="ml-1 text-[10px] bg-red-100 text-red-600 px-1 rounded font-bold">MINGGU</span>' : ''}
+                    </td>
+                    <td class="p-3 text-gray-700 font-semibold">${item.status}</td>
+                    <td class="p-3 font-mono ${rowGaji < 0 ? 'text-red-500' : 'text-green-600'}">
+                        ${rowGaji < 0 ? '-' : ''}Rp ${Math.abs(rowGaji).toLocaleString()}
+                    </td>
+                `;
+                tbody.appendChild(row);
+            });
+
+            document.getElementById('stat-total-gaji').innerText = `Rp ${totalBase.toLocaleString()}`;
+            document.getElementById('stat-total-overtime').innerText = `Rp ${totalOT.toLocaleString()}`;
+            document.getElementById('stat-total-kasbon').innerText = `- Rp ${totalKasbon.toLocaleString()}`;
+            document.getElementById('stat-total-net').innerText = `Rp ${(totalBase + totalOT - totalKasbon).toLocaleString()}`;
+        }
+
+        // --- FIREBASE ACTIONS ---
+        function loadData() {
+            const filterMonth = document.getElementById('month-selector').value;
+            // Listener Realtime
+            db.ref('payroll').on('value', snapshot => {
+                const data = snapshot.val() || {};
+                attendanceData = Object.keys(data).map(key => ({
+                    id: key,
+                    ...data[key]
+                })).filter(item => item.tanggal && item.tanggal.startsWith(filterMonth));
+                calculateFinancials();
+            });
+        }
+
+        function saveAttendance(date, status) {
+            const newRef = db.ref('payroll').push();
+            newRef.set({
+                tanggal: date,
+                status: status,
+                timestamp: Date.now()
+            }).then(() => {
+                showToast(`Absen ${status} Tersimpan`);
+            }).catch(err => alert("Gagal Simpan: " + err.message));
+        }
+
+        function saveSpecial(type) {
+            if (!isAdmin) return checkAccess();
+            const date = document.getElementById('action-date').value;
+            const val = type === 'Kasbon' ? parseInt(document.getElementById('cfg-kasbon-val').value) : 0;
+            
+            db.ref('payroll').push().set({
+                tanggal: date,
+                status: type,
+                nilai: val,
+                timestamp: Date.now()
+            }).then(() => {
+                showToast(`${type} berhasil ditambahkan`);
+            });
+        }
+
+        function deleteItem(id) {
+            if (!isAdmin) return;
+            if (confirm("Hapus data ini?")) {
+                db.ref('payroll/' + id).remove()
+                    .then(() => showToast("Data dihapus"))
+                    .catch(err => alert(err.message));
+            }
+        }
+
+        function clearAllData() {
+            if (!isAdmin) return;
+            if (confirm("PERINGATAN: Ini akan menghapus SELURUH data di database. Lanjutkan?")) {
+                db.ref('payroll').remove()
+                    .then(() => showToast("Database dikosongkan"));
+            }
+        }
+
+        function showToast(msg) {
+            const t = document.getElementById('toast');
+            t.innerText = msg; 
+            t.classList.remove('hidden', 'translate-y-10');
+            setTimeout(() => t.classList.add('hidden', 'translate-y-10'), 3000);
+        }
+
+        // --- EVENT LISTENERS ---
+        document.querySelectorAll('.attendance-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                if (!isAdmin) return checkAccess();
+                saveAttendance(getToday(), btn.getAttribute('data-type'));
+            });
+        });
+
+        document.addEventListener('DOMContentLoaded', () => {
+            const today = getToday();
+            document.getElementById('month-selector').value = today.substring(0, 7);
+            document.getElementById('action-date').value = today;
+            
+            const options = { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' };
+            document.getElementById('current-date').innerText = new Date().toLocaleDateString('id-ID', options);
+            
+            loadData(); // Jalankan listener Firebase
+        });
+    </script>
+</body>
+</html>
